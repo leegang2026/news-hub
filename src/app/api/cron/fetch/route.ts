@@ -27,12 +27,23 @@ async function fetchRSS(url: string, config: any): Promise<RawArticle[]> {
   try {
     const feed = await rssParser.parseURL(url);
     const articles: RawArticle[] = [];
-    for (const item of feed.items.slice(0, 15)) {
+    const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const maxArticles = 200; // safety cap, time filter is the primary limiter
+
+    for (const item of feed.items.slice(0, maxArticles)) {
       const title = item.title || "";
       const link = item.link || "";
       const content = item.contentSnippet || item.content || "";
       const pubDate = item.pubDate || item.isoDate;
       if (!title || !link) continue;
+
+      // Only include articles published in the last 24 hours
+      if (pubDate) {
+        const pubTime = new Date(pubDate).getTime();
+        if (pubTime < twentyFourHoursAgo.getTime()) continue;
+      }
+      // If no pubDate, include anyway (RSS feeds without dates are rare)
+
       articles.push({
         title,
         url: link,
@@ -134,6 +145,20 @@ export async function GET(request: Request) {
       const board = source.boards;
       if (!board) continue;
 
+      // xueqiu sources are handled by POST /api/cron/fetch-xueqiu (local Kimi WebBridge)
+      // Detect by type OR by config.xueqiu_user_id (for backward compat before DB constraint update)
+      if (source.type === "xueqiu" || source.config?.xueqiu_user_id) {
+        results.push({
+          source: source.name,
+          board: board.name,
+          fetched: 0,
+          saved: 0,
+          skipped: 0,
+          note: "xueqiu 来源由本地 Kimi WebBridge 脚本处理",
+        });
+        continue;
+      }
+
       let rawArticles: RawArticle[] = [];
       if (source.type === "rss") {
         rawArticles = await fetchRSS(source.url, source.config);
@@ -141,14 +166,14 @@ export async function GET(request: Request) {
         rawArticles = await fetchWeb(source.url, source.config);
       }
 
-      // Get existing articles for deduplication
+      // Get existing articles for deduplication (last 500, covers 24h+)
       const { data: existing } = await supabase
         .from("articles")
         .select("hash, title, summary")
         .eq("board_id", source.board_id)
         .eq("user_id", board.user_id)
         .order("created_at", { ascending: false })
-        .limit(50);
+        .limit(500);
 
       const existingArticles = existing || [];
       let savedCount = 0;

@@ -255,6 +255,8 @@ export function BoardSettings() {
       criteria: formCriteria as any,
     };
 
+    let boardId = editingBoard?.id || "";
+
     if (editingBoard) {
       const { error } = await supabase
         .from("boards")
@@ -264,19 +266,38 @@ export function BoardSettings() {
         toast.error("更新失败: " + error.message);
         return;
       }
-      toast.success("板块已更新");
+      // 删除旧来源，重新插入
+      await supabase.from("sources").delete().eq("board_id", boardId);
     } else {
-      const { error } = await supabase.from("boards").insert({
-        user_id: user.id,
-        ...payload,
-      });
-      if (error) {
-        toast.error("创建失败: " + error.message);
+      const { data: newBoard, error } = await supabase
+        .from("boards")
+        .insert({ user_id: user.id, ...payload })
+        .select("id")
+        .single();
+      if (error || !newBoard) {
+        toast.error("创建失败: " + error?.message);
         return;
       }
-      toast.success("板块已创建");
+      boardId = newBoard.id;
     }
 
+    // 保存来源
+    if (formSources.length > 0) {
+      const sourceRows = formSources.map((s) => ({
+        board_id: boardId,
+        user_id: user.id,
+        name: s.name,
+        type: s.type,
+        url: s.url,
+        config: s.selector ? { selectors: { item: s.selector } } : {},
+      }));
+      const { error: srcError } = await supabase.from("sources").insert(sourceRows);
+      if (srcError) {
+        toast.error("来源保存失败: " + srcError.message);
+      }
+    }
+
+    toast.success(editingBoard ? "板块已更新" : "板块已创建");
     setDialogOpen(false);
     resetForm();
     fetchBoards();

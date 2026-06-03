@@ -8,10 +8,11 @@ interface BoardHeaderProps {
   icon: string;
   description: string;
   count: number;
+  onRefreshClick?: () => void;
   onSettingsClick?: () => void;
 }
 
-export function BoardHeader({ name, icon, description, count, onSettingsClick }: BoardHeaderProps) {
+export function BoardHeader({ name, icon, description, count, onRefreshClick, onSettingsClick }: BoardHeaderProps) {
   return (
     <div>
       <div className="flex items-start justify-between">
@@ -25,7 +26,7 @@ export function BoardHeader({ name, icon, description, count, onSettingsClick }:
           <p className="mt-1 text-sm text-neutral-500">{description}</p>
         </div>
         <div className="flex items-center gap-1">
-          <Button variant="ghost" size="sm" className="h-8 gap-1 text-xs text-neutral-500">
+          <Button variant="ghost" size="sm" className="h-8 gap-1 text-xs text-neutral-500" onClick={onRefreshClick}>
             <RefreshCw className="h-3.5 w-3.5" />
             刷新
           </Button>

@@ -144,7 +144,39 @@ export const mockDailyReport = {
   summary:
     "今日共收录 35 条资讯。AI 行业迎来 OpenAI GPT-5 预览版发布，引发广泛关注；科技领域苹果 WWDC 2025 定档；航天方面 SpaceX 星舰第七次试飞取得部分成功。整体市场情绪偏积极，正面资讯占比 60%。",
   article_count: 35,
-  top_articles: mockArticles.slice(0, 3),
+  top_articles: {
+    overallTitle: "今日日报",
+    overallSummary:
+      "今日共收录 35 条资讯。AI 行业迎来 OpenAI GPT-5 预览版发布，引发广泛关注；科技领域苹果 WWDC 2025 定档；航天方面 SpaceX 星舰第七次试飞取得部分成功。整体市场情绪偏积极。",
+    boardSections: [
+      {
+        boardId: "demo-board-1",
+        boardName: "AIHOT",
+        boardIcon: "📁",
+        summary: "AI 板块今日重点关注 OpenAI GPT-5 预览版发布及 Claude 4 正式版上线。",
+        articleCount: 3,
+        articles: mockArticles.slice(0, 3).map((a) => ({
+          id: a.id,
+          title: a.title,
+          url: a.url,
+          summary: a.summary,
+          sourceName: a.author || "未知来源",
+          publishedAt: a.published_at,
+          importanceScore: a.importance_score,
+          sentiment: a.sentiment,
+          tags: a.tags,
+        })),
+      },
+      {
+        boardId: "demo-board-2",
+        boardName: "价值投资大师语录",
+        boardIcon: "📁",
+        summary: "价值投资板块今日关注市场估值变化与投资者情绪。",
+        articleCount: 0,
+        articles: [],
+      },
+    ],
+  },
   is_sent: true,
   sent_at: new Date().toISOString(),
   created_at: new Date().toISOString(),

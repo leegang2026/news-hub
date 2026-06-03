@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { Plus, Trash2, Edit2, Rss, Globe, FileJson, MessageCircle } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Plus, Trash2, Edit2, Rss, Globe, FileJson, MessageCircle, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -10,17 +10,24 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { createClient } from "@/lib/supabase/client";
 import { toast } from "sonner";
 
-interface Source {
+interface SourceRecord {
   id: string;
+  board_id: string;
+  user_id: string;
   name: string;
-  type: "rss" | "web" | "api" | "wechat";
+  type: "rss" | "web" | "api" | "wechat" | "xueqiu";
   url: string;
-  keywords: string;
-  excludeKeywords: string;
-  minImportance: number;
-  selector?: string;
+  config: Record<string, any>;
+}
+
+interface SourceForm {
+  name: string;
+  type: "rss" | "web" | "api" | "wechat" | "xueqiu";
+  url: string;
+  selector: string;
 }
 
 const typeIcons = {
@@ -28,13 +35,15 @@ const typeIcons = {
   web: Globe,
   api: FileJson,
   wechat: MessageCircle,
+  xueqiu: Globe,
 };
 
-const typeLabels = {
+const typeLabels: Record<string, string> = {
   rss: "RSS 订阅",
   web: "网页抓取",
   api: "API 接口",
   wechat: "微信公众号",
+  xueqiu: "雪球用户",
 };
 
 interface SourceManagerProps {
@@ -42,76 +51,129 @@ interface SourceManagerProps {
   boardName: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  onSaved?: () => void;
 }
 
-const mockSources: Record<string, Source[]> = {
-  "demo-1": [
-    { id: "s1", name: "36氪", type: "rss", url: "https://36kr.com/feed", keywords: "科技,AI,创业", excludeKeywords: "广告", minImportance: 50 },
-    { id: "s2", name: "TechCrunch 中文", type: "rss", url: "https://techcrunch.com/feed/", keywords: "", excludeKeywords: "", minImportance: 60 },
-    { id: "s3", name: "BBC 科技", type: "web", url: "https://www.bbc.com/news/technology", keywords: "中国,AI,芯片", excludeKeywords: "体育", minImportance: 55, selector: ".gs-c-promo" },
-  ],
-  "demo-2": [
-    { id: "s4", name: "机器之心", type: "rss", url: "https://www.jiqizhixin.com/rss", keywords: "大模型,OpenAI,Claude", excludeKeywords: "招聘", minImportance: 60 },
-    { id: "s5", name: "Paper Digest", type: "api", url: "https://api.paperdigest.org/daily", keywords: "", excludeKeywords: "", minImportance: 70 },
-  ],
-  "demo-3": [
-    { id: "s6", name: "财新网", type: "rss", url: "https://caixin.com/feed", keywords: "央行,股市,基金", excludeKeywords: "房产", minImportance: 65 },
-    { id: "s7", name: "华尔街见闻", type: "wechat", url: "https://mp.weixin.qq.com/s/xxx", keywords: "美联储,A股,港股", excludeKeywords: "", minImportance: 60 },
-  ],
-};
+const emptyForm: SourceForm = { name: "", type: "rss", url: "", selector: "" };
 
-export function SourceManager({ boardId, boardName, open, onOpenChange }: SourceManagerProps) {
-  const [sources, setSources] = useState<Source[]>(mockSources[boardId] || []);
-  const [editing, setEditing] = useState<Source | null>(null);
+export function SourceManager({ boardId, boardName, open, onOpenChange, onSaved }: SourceManagerProps) {
+  const [sources, setSources] = useState<SourceRecord[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [editing, setEditing] = useState<SourceRecord | null>(null);
   const [isAdding, setIsAdding] = useState(false);
+  const [form, setForm] = useState<SourceForm>({ ...emptyForm });
 
-  const [form, setForm] = useState<Partial<Source>>({
-    type: "rss",
-    keywords: "",
-    excludeKeywords: "",
-    minImportance: 50,
-  });
+  // Fetch sources when dialog opens
+  useEffect(() => {
+    if (!open) return;
+    async function fetchSources() {
+      setLoading(true);
+      try {
+        const supabase = createClient();
+        const { data: userData } = await supabase.auth.getUser();
+        if (!userData?.user?.id) return;
+
+        const { data } = await supabase
+          .from("sources")
+          .select("*")
+          .eq("board_id", boardId)
+          .eq("user_id", userData.user.id)
+          .order("created_at", { ascending: true });
+
+        setSources(data || []);
+      } catch {
+        // ignore
+      }
+      setLoading(false);
+    }
+    fetchSources();
+  }, [open, boardId]);
 
   const resetForm = () => {
-    setForm({ type: "rss", keywords: "", excludeKeywords: "", minImportance: 50 });
+    setForm({ ...emptyForm });
     setEditing(null);
     setIsAdding(false);
   };
 
-  const handleSave = () => {
-    if (!form.name?.trim() || !form.url?.trim()) {
+  const handleSave = async () => {
+    if (!form.name.trim() || !form.url.trim()) {
       toast.error("请填写名称和 URL");
       return;
     }
 
-    if (editing) {
-      setSources(sources.map((s) => (s.id === editing.id ? { ...s, ...form } as Source : s)));
-      toast.success("来源已更新");
-    } else {
-      const newSource: Source = {
-        id: "src-" + Date.now(),
+    setSaving(true);
+    try {
+      const supabase = createClient();
+      const { data: userData } = await supabase.auth.getUser();
+      if (!userData?.user?.id) {
+        toast.error("请先登录");
+        return;
+      }
+
+      // xueqiu type stored as "web" with config marker (DB constraint pending)
+      const dbType = form.type === "xueqiu" ? "web" : form.type;
+      const xueqiuConfig = form.type === "xueqiu" ? { xueqiu_user_id: form.url.trim() } : {};
+      const selectorConfig = form.selector ? { selectors: { item: form.selector } } : {};
+      const config = { ...xueqiuConfig, ...selectorConfig };
+
+      const payload = {
+        board_id: boardId,
+        user_id: userData.user.id,
         name: form.name.trim(),
-        type: form.type as Source["type"],
+        type: dbType,
         url: form.url.trim(),
-        keywords: form.keywords || "",
-        excludeKeywords: form.excludeKeywords || "",
-        minImportance: form.minImportance || 50,
-        selector: form.selector,
+        config,
       };
-      setSources([...sources, newSource]);
-      toast.success("来源已添加");
+
+      if (editing) {
+        const { error } = await supabase
+          .from("sources")
+          .update(payload)
+          .eq("id", editing.id);
+        if (error) throw error;
+        setSources(sources.map((s) => (s.id === editing.id ? { ...s, ...payload, config: payload.config } : s)));
+        toast.success("来源已更新");
+      } else {
+        const { data, error } = await supabase
+          .from("sources")
+          .insert(payload)
+          .select()
+          .single();
+        if (error) throw error;
+        if (data) setSources([...sources, data]);
+        toast.success("来源已添加");
+      }
+      resetForm();
+      onSaved?.();
+    } catch (err: any) {
+      toast.error("保存失败: " + (err.message || "未知错误"));
     }
-    resetForm();
+    setSaving(false);
   };
 
-  const handleDelete = (id: string) => {
-    setSources(sources.filter((s) => s.id !== id));
-    toast.success("来源已删除");
+  const handleDelete = async (id: string) => {
+    try {
+      const supabase = createClient();
+      const { error } = await supabase.from("sources").delete().eq("id", id);
+      if (error) throw error;
+      setSources(sources.filter((s) => s.id !== id));
+      toast.success("来源已删除");
+      onSaved?.();
+    } catch (err: any) {
+      toast.error("删除失败: " + (err.message || "未知错误"));
+    }
   };
 
-  const startEdit = (source: Source) => {
+  const startEdit = (source: SourceRecord) => {
     setEditing(source);
-    setForm({ ...source });
+    const isXueqiu = source.type === "xueqiu" || source.config?.xueqiu_user_id;
+    setForm({
+      name: source.name,
+      type: isXueqiu ? "xueqiu" : source.type,
+      url: source.url,
+      selector: source.config?.selectors?.item || "",
+    });
     setIsAdding(true);
   };
 
@@ -132,7 +194,7 @@ export function SourceManager({ boardId, boardName, open, onOpenChange }: Source
             <div>
               <label className="block text-xs font-medium text-neutral-600 mb-1">名称</label>
               <Input
-                value={form.name || ""}
+                value={form.name}
                 onChange={(e) => setForm({ ...form, name: e.target.value })}
                 placeholder="例如：36氪"
               />
@@ -140,12 +202,13 @@ export function SourceManager({ boardId, boardName, open, onOpenChange }: Source
 
             <div>
               <label className="block text-xs font-medium text-neutral-600 mb-1">类型</label>
-              <div className="flex gap-2">
-                {( ["rss", "web", "api", "wechat"] as const ).map((t) => {
+              <div className="flex gap-2 flex-wrap">
+                {( ["rss", "web", "api", "wechat", "xueqiu"] as const ).map((t) => {
                   const Icon = typeIcons[t];
                   return (
                     <button
                       key={t}
+                      type="button"
                       onClick={() => setForm({ ...form, type: t })}
                       className={`flex items-center gap-1 rounded-md border px-3 py-2 text-xs transition-colors ${
                         form.type === t
@@ -163,12 +226,17 @@ export function SourceManager({ boardId, boardName, open, onOpenChange }: Source
 
             <div>
               <label className="block text-xs font-medium text-neutral-600 mb-1">
-                {form.type === "wechat" ? "公众号文章链接 / 搜狗搜索链接" : "URL 地址"}
+                {form.type === "wechat" ? "公众号文章链接 / 搜狗搜索链接" :
+                 form.type === "xueqiu" ? "雪球用户 ID（数字）" : "URL 地址"}
               </label>
               <Input
-                value={form.url || ""}
+                value={form.url}
                 onChange={(e) => setForm({ ...form, url: e.target.value })}
-                placeholder={form.type === "rss" ? "https://example.com/feed" : "https://example.com"}
+                placeholder={
+                  form.type === "rss" ? "https://example.com/feed" :
+                  form.type === "xueqiu" ? "例如：1247347556" :
+                  "https://example.com"
+                }
               />
             </div>
 
@@ -176,62 +244,37 @@ export function SourceManager({ boardId, boardName, open, onOpenChange }: Source
               <div>
                 <label className="block text-xs font-medium text-neutral-600 mb-1">CSS 选择器（可选）</label>
                 <Input
-                  value={form.selector || ""}
+                  value={form.selector}
                   onChange={(e) => setForm({ ...form, selector: e.target.value })}
                   placeholder="例如：article, .post-item"
                 />
               </div>
             )}
 
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-xs font-medium text-neutral-600 mb-1">包含关键词（逗号分隔）</label>
-                <Input
-                  value={form.keywords || ""}
-                  onChange={(e) => setForm({ ...form, keywords: e.target.value })}
-                  placeholder="AI, 科技"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-neutral-600 mb-1">排除关键词（逗号分隔）</label>
-                <Input
-                  value={form.excludeKeywords || ""}
-                  onChange={(e) => setForm({ ...form, excludeKeywords: e.target.value })}
-                  placeholder="广告, 招聘"
-                />
-              </div>
-            </div>
-
-            <div>
-              <label className="block text-xs font-medium text-neutral-600 mb-1">最小重要度：{form.minImportance || 50}</label>
-              <input
-                type="range"
-                min={0}
-                max={100}
-                value={form.minImportance || 50}
-                onChange={(e) => setForm({ ...form, minImportance: parseInt(e.target.value) })}
-                className="w-full"
-              />
-            </div>
-
             <div className="flex gap-2 pt-2">
               <Button variant="outline" className="flex-1" onClick={resetForm}>
                 取消
               </Button>
-              <Button className="flex-1" onClick={handleSave}>
-                {editing ? "保存修改" : "添加来源"}
+              <Button className="flex-1" onClick={handleSave} disabled={saving}>
+                {saving ? "保存中..." : editing ? "保存修改" : "添加来源"}
               </Button>
             </div>
           </div>
         ) : (
           <div className="space-y-2 pt-2">
-            {sources.length === 0 ? (
+            {loading ? (
+              <div className="flex items-center justify-center py-8">
+                <Loader2 className="h-5 w-5 animate-spin text-neutral-400" />
+              </div>
+            ) : sources.length === 0 ? (
               <div className="py-8 text-center text-sm text-neutral-400">
                 暂无来源，点击下方按钮添加
               </div>
             ) : (
               sources.map((source) => {
-                const Icon = typeIcons[source.type];
+                const isXueqiu = source.type === "xueqiu" || source.config?.xueqiu_user_id;
+                const displayType = isXueqiu ? "xueqiu" : source.type;
+                const Icon = typeIcons[displayType] || Globe;
                 return (
                   <div
                     key={source.id}
@@ -242,20 +285,10 @@ export function SourceManager({ boardId, boardName, open, onOpenChange }: Source
                       <div className="flex items-center gap-2">
                         <span className="text-sm font-medium text-neutral-900">{source.name}</span>
                         <span className="text-[10px] text-neutral-400 border border-neutral-200 rounded px-1">
-                          {typeLabels[source.type]}
+                          {typeLabels[displayType] || typeLabels[source.type]}
                         </span>
                       </div>
                       <div className="text-xs text-neutral-400 truncate">{source.url}</div>
-                      {(source.keywords || source.excludeKeywords) && (
-                        <div className="flex gap-2 mt-0.5">
-                          {source.keywords && (
-                            <span className="text-[10px] text-green-600">包含: {source.keywords}</span>
-                          )}
-                          {source.excludeKeywords && (
-                            <span className="text-[10px] text-red-500">排除: {source.excludeKeywords}</span>
-                          )}
-                        </div>
-                      )}
                     </div>
                     <div className="flex items-center gap-0.5 shrink-0">
                       <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => startEdit(source)}>

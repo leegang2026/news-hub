@@ -54,6 +54,33 @@ export interface Article {
   created_at: string;
 }
 
+export interface DailyReportBoardArticle {
+  id: string;
+  title: string;
+  url: string;
+  summary: string | null;
+  sourceName: string;
+  publishedAt: string;
+  importanceScore: number;
+  sentiment: string;
+  tags: string[];
+}
+
+export interface DailyReportBoardSection {
+  boardId: string;
+  boardName: string;
+  boardIcon: string;
+  summary: string;
+  articleCount: number;
+  articles: DailyReportBoardArticle[];
+}
+
+export interface DailyReportData {
+  overallTitle: string;
+  overallSummary: string;
+  boardSections: DailyReportBoardSection[];
+}
+
 export interface DailyReport {
   id: string;
   user_id: string;
@@ -61,7 +88,7 @@ export interface DailyReport {
   title: string;
   summary: string;
   article_count: number;
-  top_articles: Article[];
+  top_articles: DailyReportData | Article[];
   is_sent: boolean;
   sent_at: string | null;
   created_at: string;

@@ -1,10 +1,17 @@
 import { BoardPageClient } from "@/components/board/board-page-client";
 import { getBoardById, getArticles } from "@/lib/supabase/queries";
 
-export default async function BoardPage({ params }: { params: Promise<{ id: string }> }) {
+export default async function BoardPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ id: string }>;
+  searchParams: Promise<{ date?: string; source?: string }>;
+}) {
   const { id } = await params;
+  const { date, source } = await searchParams;
   const board = await getBoardById(id);
-  const articles = await getArticles(id);
+  const articles = await getArticles(id, undefined, 50, { date, sourceId: source });
 
   if (!board) {
     return (
@@ -14,5 +21,15 @@ export default async function BoardPage({ params }: { params: Promise<{ id: stri
     );
   }
 
-  return <BoardPageClient board={board} articles={articles} />;
+  const sources = (board.sources || []).map((s: any) => ({ id: s.id, name: s.name }));
+
+  return (
+    <BoardPageClient
+      board={board}
+      articles={articles}
+      sources={sources}
+      currentDate={date || ""}
+      currentSource={source || ""}
+    />
+  );
 }

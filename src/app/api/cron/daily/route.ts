@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { generateDailyReport } from "@/lib/ai/processor";
+import { generateBoardSummary, generateOverallReport } from "@/lib/ai/processor";
 import type { ModelConfig } from "@/components/settings/ai-settings";
+import type { DailyReportBoardArticle, DailyReportBoardSection } from "@/types";
 
 function getAdminClient() {
   return createClient(
@@ -58,52 +59,140 @@ export async function GET(request: Request) {
     const reports: any[] = [];
 
     for (const { user_id } of userIds) {
+      // Fetch articles with board/source info
       const { data: articles } = await supabase
         .from("articles")
-        .select("title, summary, tags, importance_score, sentiment")
+        .select("id, title, summary, tags, importance_score, sentiment, board_id, source_id, url, published_at")
         .eq("user_id", user_id)
         .gte("created_at", yesterday)
-        .order("importance_score", { ascending: false })
-        .limit(50);
+        .gte("importance_score", 80)
+        .order("importance_score", { ascending: false });
 
       if (!articles || articles.length === 0) continue;
 
-      let reportData: { title: string; summary: string; topArticles: any[] };
+      // Fetch sources for name resolution
+      const { data: sources } = await supabase
+        .from("sources")
+        .select("id, name")
+        .eq("user_id", user_id);
+      const sourceMap = new Map<string, string>(
+        (sources || []).map((s: any) => [s.id, s.name])
+      );
+
+      // Fetch boards for name/icon resolution
+      const { data: userBoards } = await supabase
+        .from("boards")
+        .select("id, name, icon")
+        .eq("user_id", user_id);
+      const boardMap = new Map<string, { name: string; icon: string }>(
+        (userBoards || []).map((b: any) => [b.id, { name: b.name, icon: b.icon || "📁" }])
+      );
+
+      // Group articles by board_id
+      const grouped = new Map<string, typeof articles>();
+      for (const article of articles) {
+        const key = article.board_id || "__unclassified__";
+        if (!grouped.has(key)) grouped.set(key, []);
+        grouped.get(key)!.push(article);
+      }
+
+      // Process each board section
+      const boardSections: DailyReportBoardSection[] = [];
+
+      for (const [boardId, groupArticles] of grouped) {
+        const top10 = groupArticles.slice(0, 10);
+
+        const boardInfo = boardId === "__unclassified__"
+          ? { name: "未分类", icon: "📋" }
+          : boardMap.get(boardId) || { name: "未知板块", icon: "📋" };
+
+        // Map articles with source names
+        const mappedArticles: DailyReportBoardArticle[] = top10.map((a: any) => ({
+          id: a.id,
+          title: a.title,
+          url: a.url,
+          summary: a.summary,
+          sourceName: sourceMap.get(a.source_id) || "未知来源",
+          publishedAt: a.published_at,
+          importanceScore: a.importance_score,
+          sentiment: a.sentiment || "neutral",
+          tags: a.tags || [],
+        }));
+
+        // Generate board summary
+        let boardSummary: string;
+        if (aiCfg && aiCfg.apiKey) {
+          boardSummary = await generateBoardSummary(
+            boardInfo.name,
+            top10.map((a: any) => ({
+              title: a.title,
+              summary: a.summary || "",
+              importance: a.importance_score,
+            })),
+            aiCfg
+          );
+        } else {
+          const pos = top10.filter((a: any) => a.sentiment === "positive").length;
+          const neg = top10.filter((a: any) => a.sentiment === "negative").length;
+          boardSummary = `${boardInfo.name} 板块共收录 ${groupArticles.length} 条资讯。正面 ${pos} 条，负面 ${neg} 条。`;
+        }
+
+        boardSections.push({
+          boardId,
+          boardName: boardInfo.name,
+          boardIcon: boardInfo.icon,
+          summary: boardSummary,
+          articleCount: groupArticles.length,
+          articles: mappedArticles,
+        });
+      }
+
+      // Generate overall report
+      const totalArticles = articles.length;
+      let overallTitle: string;
+      let overallSummary: string;
 
       if (aiCfg && aiCfg.apiKey) {
-        reportData = await generateDailyReport(
-          articles.map((a) => ({
-            title: a.title,
-            summary: a.summary || "",
-            tags: a.tags || [],
-            importance: a.importance_score,
+        const overall = await generateOverallReport(
+          boardSections.map((b) => ({
+            boardName: b.boardName,
+            summary: b.summary,
+            articleCount: b.articleCount,
           })),
+          totalArticles,
           aiCfg
         );
+        overallTitle = overall.title;
+        overallSummary = overall.summary;
       } else {
-        const posCount = articles.filter((a) => a.sentiment === "positive").length;
-        const negCount = articles.filter((a) => a.sentiment === "negative").length;
-        reportData = {
-          title: `${today} 日报`,
-          summary: `今日共收录 ${articles.length} 条资讯。正面 ${posCount} 条，负面 ${negCount} 条，中性 ${articles.length - posCount - negCount} 条。`,
-          topArticles: articles.slice(0, 5),
-        };
+        const posCount = articles.filter((a: any) => a.sentiment === "positive").length;
+        const negCount = articles.filter((a: any) => a.sentiment === "negative").length;
+        overallTitle = `${today} 日报`;
+        overallSummary = `今日共收录 ${totalArticles} 条资讯，涵盖 ${boardSections.length} 个板块。正面 ${posCount} 条，负面 ${negCount} 条，中性 ${totalArticles - posCount - negCount} 条。`;
       }
+
+      // Upsert report
+      const reportPayload = {
+        user_id,
+        date: today,
+        title: overallTitle,
+        summary: overallSummary,
+        article_count: totalArticles,
+        top_articles: {
+          overallTitle,
+          overallSummary,
+          boardSections,
+        },
+        is_sent: false,
+      };
 
       const { data: savedReport } = await supabase
         .from("daily_reports")
-        .upsert({
-          user_id,
-          date: today,
-          title: reportData.title,
-          summary: reportData.summary,
-          article_count: articles.length,
-          top_articles: reportData.topArticles,
-          is_sent: false,
-        })
+        .upsert(reportPayload, { onConflict: "user_id, date" })
         .select()
         .single();
 
+      // WeCom push
       const wecomKey = process.env.WECOM_WEBHOOK_KEY;
       if (wecomKey && savedReport) {
         await sendWeComMessage(wecomKey, savedReport);
@@ -113,7 +202,7 @@ export async function GET(request: Request) {
           .eq("id", savedReport.id);
       }
 
-      reports.push({ user_id, title: reportData.title, articles: articles.length });
+      reports.push({ user_id, title: overallTitle, articles: totalArticles, boards: boardSections.length });
     }
 
     return NextResponse.json({ success: true, reports });
@@ -125,7 +214,7 @@ export async function GET(request: Request) {
 
 async function sendWeComMessage(key: string, report: any) {
   const url = `https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=${key}`;
-  const content = `📰 ${report.title}\n\n${report.summary}\n\n共 ${report.article_count} 条资讯，点击查看详情 →`;
+  const content = `${report.title}\n\n${report.summary}\n\n共 ${report.article_count} 条资讯，点击查看详情 →`;
 
   await fetch(url, {
     method: "POST",

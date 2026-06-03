@@ -1,3 +1,4 @@
+-- Run this in Supabase SQL Editor (https://supabase.com/dashboard/project/wwwqueddxfilhhpjuybb)
 -- Enable RLS
 alter table if exists boards enable row level security;
 alter table if exists sources enable row level security;
@@ -26,7 +27,7 @@ create table if not exists sources (
   board_id uuid not null references boards(id) on delete cascade,
   user_id uuid not null references auth.users(id) on delete cascade,
   name text not null,
-  type text not null check (type in ('rss', 'wechat', 'api', 'web', 'xueqiu')),
+  type text not null check (type in ('rss', 'wechat', 'api', 'web')),
   url text not null,
   config jsonb default '{}',
   created_at timestamptz default now(),
@@ -94,28 +95,17 @@ create table if not exists daily_reports (
 create index if not exists idx_articles_user_board on articles(user_id, board_id);
 create index if not exists idx_articles_user_date on articles(user_id, published_at desc);
 create index if not exists idx_articles_hash on articles(user_id, hash);
--- 全文搜索索引（使用 simple 配置，支持中英文混合）
 create index if not exists idx_articles_search on articles using gin(to_tsvector('simple', title || ' ' || coalesce(summary, '')));
 
 -- RLS Policies
-
--- Boards: users can only access their own
 create policy "Users can CRUD their own boards"
   on boards for all using (auth.uid() = user_id);
-
--- Sources: users can only access their own
 create policy "Users can CRUD their own sources"
   on sources for all using (auth.uid() = user_id);
-
--- Articles: users can only access their own
 create policy "Users can CRUD their own articles"
   on articles for all using (auth.uid() = user_id);
-
--- Daily reports: users can only access their own
 create policy "Users can CRUD their own daily_reports"
   on daily_reports for all using (auth.uid() = user_id);
-
--- Model configs: users can only access their own
 create policy "Users can CRUD their own model_configs"
   on model_configs for all using (auth.uid() = user_id);
 
@@ -132,6 +122,5 @@ $$ language plpgsql;
 
 create trigger update_boards_updated_at before update on boards
   for each row execute function update_updated_at_column();
-
 create trigger update_sources_updated_at before update on sources
   for each row execute function update_updated_at_column();

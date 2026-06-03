@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   Key,
   Bot,
@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { createClient } from "@/lib/supabase/client";
 import { toast } from "sonner";
 
 export interface ModelConfig {
@@ -49,27 +50,50 @@ const providerOptions = [
   { key: "custom",      name: "自定义",       defaultUrl: "",                                     models: "自定义模型" },
 ];
 
-const defaultConfigs: ModelConfig[] = [
-  {
-    id: "demo-1",
-    alias: "DeepSeek 主力",
-    provider: "deepseek",
-    apiKey: "",
-    baseUrl: "https://api.deepseek.com/v1",
-    model: "deepseek-chat",
-    temperature: 0.3,
-    maxTokens: 800,
-    systemPrompt: "",
-    enabled: true,
-    isDefault: true,
-  },
-];
+const defaultConfigs: ModelConfig[] = [];
 
 export function AISettings() {
   const [configs, setConfigs] = useState<ModelConfig[]>(defaultConfigs);
+  const [loading, setLoading] = useState(true);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
+
+  const supabase = createClient();
+
+  useEffect(() => {
+    fetchConfigs();
+  }, []);
+
+  const fetchConfigs = async () => {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+      setLoading(false);
+      return;
+    }
+    const { data } = await supabase
+      .from("model_configs")
+      .select("*")
+      .eq("user_id", user.id)
+      .order("created_at", { ascending: true });
+
+    if (data && data.length > 0) {
+      setConfigs(data.map((c: any) => ({
+        id: c.id,
+        alias: c.alias,
+        provider: c.provider,
+        apiKey: c.api_key,
+        baseUrl: c.base_url || "",
+        model: c.model,
+        temperature: c.temperature,
+        maxTokens: c.max_tokens,
+        systemPrompt: c.system_prompt || "",
+        enabled: c.enabled,
+        isDefault: c.is_default,
+      })));
+    }
+    setLoading(false);
+  };
 
   // Form state
   const [formAlias, setFormAlias] = useState("");
@@ -120,75 +144,97 @@ export function AISettings() {
     return providerOptions.find((p) => p.key === provider)?.defaultUrl || "";
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!formAlias.trim() || !formKey.trim()) {
       toast.error("请填写别名和 API Key");
       return;
     }
 
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+
     const baseUrl = formBaseUrl.trim() || getDefaultUrl(formProvider);
     const model = formModel.trim() || providerOptions.find((p) => p.key === formProvider)?.models.split(",")[0].trim() || "";
 
+    const payload = {
+      user_id: user.id,
+      alias: formAlias.trim(),
+      provider: formProvider,
+      api_key: formKey,
+      base_url: baseUrl,
+      model,
+      temperature: formTemp,
+      max_tokens: formMaxTokens,
+      system_prompt: formSystem || null,
+      enabled: formEnabled,
+      is_default: editingId ? undefined : configs.length === 0,
+    };
+
     if (editingId) {
-      setConfigs(
-        configs.map((c) =>
-          c.id === editingId
-            ? {
-                ...c,
-                alias: formAlias.trim(),
-                provider: formProvider,
-                apiKey: formKey,
-                baseUrl,
-                model,
-                temperature: formTemp,
-                maxTokens: formMaxTokens,
-                systemPrompt: formSystem,
-                enabled: formEnabled,
-              }
-            : c
-        )
-      );
+      const { error } = await supabase
+        .from("model_configs")
+        .update(payload)
+        .eq("id", editingId);
+      if (error) {
+        toast.error("更新失败: " + error.message);
+        return;
+      }
       toast.success("模型配置已更新");
     } else {
-      const newCfg: ModelConfig = {
-        id: "cfg-" + Date.now(),
-        alias: formAlias.trim(),
-        provider: formProvider,
-        apiKey: formKey,
-        baseUrl,
-        model,
-        temperature: formTemp,
-        maxTokens: formMaxTokens,
-        systemPrompt: formSystem,
-        enabled: formEnabled,
-        isDefault: configs.length === 0,
-      };
-      setConfigs([...configs, newCfg]);
+      const { error } = await supabase
+        .from("model_configs")
+        .insert(payload);
+      if (error) {
+        toast.error("添加失败: " + error.message);
+        return;
+      }
       toast.success("模型配置已添加");
     }
     resetForm();
+    fetchConfigs();
   };
 
-  const handleDelete = (id: string) => {
-    const filtered = configs.filter((c) => c.id !== id);
-    if (filtered.length > 0 && !filtered.some((c) => c.isDefault)) {
-      filtered[0].isDefault = true;
+  const handleDelete = async (id: string) => {
+    const { error } = await supabase.from("model_configs").delete().eq("id", id);
+    if (error) {
+      toast.error("删除失败");
+      return;
     }
-    setConfigs(filtered);
     toast.success("配置已删除");
+    fetchConfigs();
   };
 
-  const handleSetDefault = (id: string) => {
-    setConfigs(configs.map((c) => ({ ...c, isDefault: c.id === id })));
+  const handleSetDefault = async (id: string) => {
+    // Clear existing defaults
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+    await supabase
+      .from("model_configs")
+      .update({ is_default: false })
+      .eq("user_id", user.id);
+    // Set new default
+    const { error } = await supabase
+      .from("model_configs")
+      .update({ is_default: true })
+      .eq("id", id);
+    if (error) {
+      toast.error("切换失败");
+      return;
+    }
     toast.success("默认模型已切换");
+    fetchConfigs();
   };
 
-  const handleToggleEnabled = (id: string) => {
-    setConfigs(
-      configs.map((c) =>
-        c.id === id ? { ...c, enabled: !c.enabled } : c
-      )
-    );
+  const handleToggleEnabled = async (id: string, currentEnabled: boolean) => {
+    const { error } = await supabase
+      .from("model_configs")
+      .update({ enabled: !currentEnabled })
+      .eq("id", id);
+    if (error) {
+      toast.error("操作失败");
+      return;
+    }
+    fetchConfigs();
   };
 
   return (
@@ -256,7 +302,7 @@ export function AISettings() {
                   </div>
                   <div className="flex items-center gap-0.5 shrink-0">
                     <button
-                      onClick={() => handleToggleEnabled(cfg.id)}
+                      onClick={() => handleToggleEnabled(cfg.id, cfg.enabled)}
                       className="rounded p-1.5 text-neutral-400 hover:bg-neutral-100"
                       title={cfg.enabled ? "禁用" : "启用"}
                     >

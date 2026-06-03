@@ -195,14 +195,15 @@ export async function generateDailyReport(
     .map((a, i) => `${i + 1}. [重要度${a.importance}] ${a.title} (${a.tags.join(", ")})`)
     .join("\n");
 
-  const prompt = `请根据以下精选文章，生成一份中文日报摘要（200字以内）。今日共收录 ${articles.length} 条资讯。
+  const todayStr = new Date().toLocaleDateString("zh-CN", { year: "numeric", month: "long", day: "numeric" });
+  const prompt = `请根据以下精选文章，生成一份中文日报摘要（200字以内）。今天日期为 ${todayStr}，共收录 ${articles.length} 条资讯。
 
 文章列表：
 ${articlesText}
 
 返回 JSON：
 {
-  "title": "日报标题（含日期）",
+  "title": "日报标题（必须在标题中使用日期 ${todayStr}，不要使用文章中的日期）",
   "summary": "摘要内容，突出最重要的事件和趋势"
 }`;
 
@@ -225,6 +226,90 @@ ${articlesText}
       title: "每日日报",
       summary: `今日共收录 ${articles.length} 条资讯。`,
       topArticles: articles.slice(0, 5),
+    };
+  }
+}
+
+// Generate per-board summary (≤100 chars)
+export async function generateBoardSummary(
+  boardName: string,
+  articles: { title: string; summary: string; importance: number }[],
+  cfg: ModelConfig
+): Promise<string> {
+  if (articles.length === 0) return `${boardName} 板块暂无资讯。`;
+
+  const articlesText = articles
+    .map((a, i) => `${i + 1}. [重要度${a.importance}] ${a.title}`)
+    .join("\n");
+
+  const prompt = `以下是"${boardName}"板块今日的精选文章，请生成一段简洁的中文摘要（100字以内），概括该板块今日的主要动态。
+
+文章列表：
+${articlesText}
+
+返回 JSON：
+{
+  "summary": "摘要内容"
+}`;
+
+  try {
+    let content: string;
+    if (cfg.provider === "gemini") {
+      content = await callGemini(cfg, prompt);
+    } else {
+      content = await callOpenAICompatible(cfg, prompt);
+    }
+    const parsed = JSON.parse(content);
+    return parsed.summary || `${boardName} 板块共收录 ${articles.length} 条资讯。`;
+  } catch (err) {
+    console.error("Board summary generation error:", err);
+    return `${boardName} 板块共收录 ${articles.length} 条资讯。`;
+  }
+}
+
+// Generate overall report from board summaries
+export async function generateOverallReport(
+  boardSummaries: { boardName: string; summary: string; articleCount: number }[],
+  totalArticles: number,
+  cfg: ModelConfig
+): Promise<{ title: string; summary: string }> {
+  if (boardSummaries.length === 0) {
+    return { title: "每日日报", summary: "今日暂无新资讯。" };
+  }
+
+  const todayStr = new Date().toLocaleDateString("zh-CN", { year: "numeric", month: "long", day: "numeric" });
+  const boardsText = boardSummaries
+    .map((b) => `- ${b.boardName}（${b.articleCount}条）：${b.summary}`)
+    .join("\n");
+
+  const prompt = `请根据以下各板块的今日摘要，生成一份总体的中文日报摘要（200字以内）。今天日期为 ${todayStr}，共收录 ${totalArticles} 条资讯，涵盖 ${boardSummaries.length} 个板块。
+
+各板块摘要：
+${boardsText}
+
+返回 JSON：
+{
+  "title": "日报标题（必须在标题中使用日期 ${todayStr}）",
+  "summary": "整体摘要内容，突出今日最重要的趋势和事件"
+}`;
+
+  try {
+    let content: string;
+    if (cfg.provider === "gemini") {
+      content = await callGemini(cfg, prompt);
+    } else {
+      content = await callOpenAICompatible(cfg, prompt);
+    }
+    const parsed = JSON.parse(content);
+    return {
+      title: parsed.title || "每日日报",
+      summary: parsed.summary || `今日共收录 ${totalArticles} 条资讯。`,
+    };
+  } catch (err) {
+    console.error("Overall report generation error:", err);
+    return {
+      title: "每日日报",
+      summary: `今日共收录 ${totalArticles} 条资讯，涵盖 ${boardSummaries.length} 个板块。`,
     };
   }
 }
